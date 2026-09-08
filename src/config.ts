@@ -11,7 +11,9 @@ export const config = {
     frameRate: 30,
     /** Video bitrate in bits per second. 8 Mbps keeps 1080x1920 clean. */
     videoBitrate: 8_000_000,
-    /** Audio bitrate in bits per second. */
+    /** How often a key frame is emitted, in seconds. Lower = easier seeking, bigger file. */
+    keyFrameIntervalSeconds: 2,
+    /** Audio bitrate in bits per second, only used when the source audio must be re-encoded. */
     audioBitrate: 128_000,
   },
 

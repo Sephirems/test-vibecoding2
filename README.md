@@ -32,9 +32,11 @@ runtime into `public/` (see `scripts/fetch-assets.mjs`). Neither is committed.
    stays near the middle), a zero-phase low-pass filter, then a hard speed
    limit. This is what removes shaking and whip pans.
 5. **Crop** — a full-height, 9:16-wide window, always clamped inside the source.
-6. **Export** — each output frame is drawn into a 1080×1920 canvas and encoded
-   with WebCodecs; the audio track is decoded, re-encoded to AAC and muxed into
-   the same MP4.
+6. **Export** — the source is demuxed and decoded sequentially (never by
+   seeking, which forces a decode from the previous key frame every time), each
+   frame is cropped straight into a 1080×1920 canvas and encoded with WebCodecs.
+   The audio is copied packet for packet whenever the MP4 container accepts its
+   codec, so most exports never re-encode audio at all.
 
 ## Tuning
 
@@ -53,7 +55,7 @@ src/
     detection/         MediaPipe wrapper
     tracking/          subject selection, track building
     crop/              smoothing, crop geometry
-    export/            WebCodecs video + AAC audio, MP4 muxing
+    export/            demux, decode, crop, encode and mux (mediabunny)
     analyze.ts         orchestration
   ui/                  React components and styles
 ```
@@ -63,6 +65,7 @@ src/
 - Chrome/Edge only, because of WebCodecs.
 - No scene-cut detection: a hard cut makes the framing pan slowly across the
   new shot instead of jumping.
-- Export runs roughly at 1–3× the video duration.
+- Export runs at roughly 5× real time on a mid-range machine (a 10s clip
+  exports in about 2s); it depends heavily on hardware encoder availability.
 - The subject is centered horizontally; there is no look-ahead room based on
   gaze direction yet.

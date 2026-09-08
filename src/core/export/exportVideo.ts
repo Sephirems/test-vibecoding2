@@ -1,20 +1,41 @@
-import { ArrayBufferTarget, Muxer } from 'mp4-muxer'
+import {
+  ALL_FORMATS,
+  AudioSampleSink,
+  AudioSampleSource,
+  BlobSource,
+  BufferTarget,
+  CanvasSource,
+  EncodedAudioPacketSource,
+  EncodedPacketSink,
+  Input,
+  Mp4OutputFormat,
+  Output,
+  VideoSampleSink,
+  getFirstEncodableAudioCodec,
+  type AudioCodec,
+  type InputAudioTrack,
+  type InputVideoTrack,
+} from 'mediabunny'
 import { config } from '../../config'
 import { cropRectAt } from '../crop/computeCrop'
-import { FrameSampler } from '../video/frameSampler'
-import { decodeAudio, encodeAudioInto } from './encodeAudio'
 import { UserFacingError } from '../video/loadVideo'
 import type { AnalysisResult, Progress, VideoInfo } from '../../types'
 
 /** True when the browser can run the export at all. */
 export function isExportSupported(): boolean {
-  return typeof window !== 'undefined' && 'VideoEncoder' in window && 'AudioEncoder' in window
+  return typeof window !== 'undefined' && 'VideoEncoder' in window
 }
 
 /**
- * Renders the vertical video: for every output frame we seek the source, draw
- * the crop rectangle into a 1080x1920 canvas, and encode it. The audio track is
- * decoded and re-encoded separately, then muxed into the same MP4.
+ * Renders the vertical video.
+ *
+ * Frames are pulled straight from the file's own packets and decoded in order.
+ * We deliberately do not seek: seeking forces the decoder to restart from the
+ * previous key frame every single time, which was by far the slowest part of
+ * the export. Decoding sequentially is several times faster.
+ *
+ * The audio is copied over untouched whenever the output container accepts its
+ * codec, so most exports never pay for an audio re-encode at all.
  */
 export async function exportVideo(
   info: VideoInfo,
@@ -28,95 +49,188 @@ export async function exportVideo(
     )
   }
 
-  const { width, height, frameRate } = config.output
-  const totalFrames = Math.max(1, Math.floor(info.duration * frameRate))
+  const { width, height } = config.output
+
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(info.file) })
+  const videoTrack = await input.getPrimaryVideoTrack()
+  if (!videoTrack) {
+    throw new UserFacingError('This file has no video track to reframe.')
+  }
+  if (!(await videoTrack.canDecode())) {
+    throw new UserFacingError(
+      'This video uses a codec your browser cannot decode. Try an MP4 encoded with H.264.',
+    )
+  }
 
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { alpha: false })
   if (!ctx) throw new Error('Could not create the 2D context used to render the output frames.')
 
-  onProgress({ stage: 'encoding', ratio: 0, message: 'Reading the audio track…' })
-  const audio = await decodeAudio(info.file)
-
-  const muxer = new Muxer({
-    target: new ArrayBufferTarget(),
-    video: { codec: 'avc', width, height, frameRate },
-    audio: audio
-      ? { codec: 'aac', numberOfChannels: audio.numberOfChannels, sampleRate: audio.sampleRate }
-      : undefined,
-    fastStart: 'in-memory',
+  const output = new Output({
+    format: new Mp4OutputFormat({ fastStart: 'in-memory' }),
+    target: new BufferTarget(),
   })
 
-  let encoderError: Error | null = null
-  const encoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-    error: (error) => {
-      encoderError = new Error(`Video encoding failed: ${error.message}`)
-    },
-  })
-
-  encoder.configure({
-    codec: 'avc1.640028', // H.264 High profile, level 4.0
-    width,
-    height,
+  const videoSource = new CanvasSource(canvas, {
+    codec: 'avc',
     bitrate: config.output.videoBitrate,
-    framerate: frameRate,
+    keyFrameInterval: config.output.keyFrameIntervalSeconds,
+    latencyMode: 'quality',
   })
+  output.addVideoTrack(videoSource)
 
-  const sampler = await FrameSampler.create(info.url, info.width, info.height)
+  const audio = await prepareAudio(input, output)
+  await output.start()
 
   try {
-    for (let i = 0; i < totalFrames; i++) {
-      if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
-      if (encoderError) throw encoderError
-
-      const time = i / frameRate
-      const source = await sampler.grab(time)
-      const crop = cropRectAt(analysis.keyframes, time, info.width, info.height)
-
-      ctx.drawImage(
-        source,
-        crop.x, crop.y, crop.width, crop.height,
-        0, 0, width, height,
-      )
-
-      const frame = new VideoFrame(canvas, {
-        timestamp: Math.round(time * 1_000_000),
-        duration: Math.round(1_000_000 / frameRate),
-      })
-      // A keyframe every 2 seconds keeps the file seekable.
-      encoder.encode(frame, { keyFrame: i % (frameRate * 2) === 0 })
-      frame.close()
-
-      onProgress({
-        stage: 'encoding',
-        ratio: (i + 1) / totalFrames,
-        message: `Generating the vertical video… frame ${i + 1} of ${totalFrames}`,
-      })
-
-      if (encoder.encodeQueueSize > 8) {
-        await new Promise<void>((resolve) => {
-          encoder.ondequeue = () => {
-            if (encoder.encodeQueueSize <= 2) resolve()
-          }
-        })
-      }
-    }
-
-    await encoder.flush()
-    if (encoderError) throw encoderError
+    await renderFrames(videoTrack, analysis, info, ctx, videoSource, onProgress, signal)
 
     if (audio) {
-      onProgress({ stage: 'encoding', ratio: 1, message: 'Adding the audio track…' })
-      await encodeAudioInto(muxer, audio)
+      onProgress({ stage: 'encoding', ratio: 1, message: 'Adding the audio track...' })
+      await audio.run()
     }
 
-    muxer.finalize()
-    return new Blob([muxer.target.buffer], { type: 'video/mp4' })
+    await output.finalize()
+    const buffer = output.target.buffer
+    if (!buffer) throw new Error('The muxer produced no output buffer.')
+    return new Blob([buffer], { type: 'video/mp4' })
+  } catch (error) {
+    await output.cancel().catch(() => {})
+    throw error
   } finally {
-    sampler.dispose()
-    if (encoder.state !== 'closed') encoder.close()
+    input.dispose()
+  }
+}
+
+/** Decodes the source in order, draws each crop and encodes it. */
+async function renderFrames(
+  videoTrack: InputVideoTrack,
+  analysis: AnalysisResult,
+  info: VideoInfo,
+  ctx: CanvasRenderingContext2D,
+  videoSource: CanvasSource,
+  onProgress: (progress: Progress) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const sink = new VideoSampleSink(videoTrack)
+  // Frames closer together than this are dropped, capping the output frame rate
+  // without ever resampling: emitted timestamps stay those of the source.
+  const minFrameGap = 1 / config.output.frameRate
+
+  let nextEmitTime = 0
+  let emitted = 0
+  let lastProgressAt = 0
+
+  for await (const sample of sink.samples()) {
+    try {
+      if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
+
+      // A tiny epsilon keeps rounding from dropping an otherwise valid frame.
+      if (sample.timestamp + 1e-6 < nextEmitTime) continue
+      nextEmitTime = sample.timestamp + minFrameGap
+
+      const crop = cropRectAt(analysis.keyframes, sample.timestamp, info.width, info.height)
+      sample.draw(
+        ctx,
+        crop.x, crop.y, crop.width, crop.height,
+        0, 0, ctx.canvas.width, ctx.canvas.height,
+      )
+
+      // Duration is left out on purpose: the muxer derives it from the next
+      // timestamp, which keeps the timeline correct even when frames are dropped.
+      await videoSource.add(sample.timestamp)
+      emitted++
+
+      // Throttled so a long export does not trigger a React render per frame.
+      const now = performance.now()
+      if (now - lastProgressAt > 100) {
+        lastProgressAt = now
+        onProgress({
+          stage: 'encoding',
+          ratio: Math.min(1, sample.timestamp / info.duration),
+          message: `Generating the vertical video... ${sample.timestamp.toFixed(1)}s of ${info.duration.toFixed(1)}s`,
+        })
+      }
+    } finally {
+      sample.close()
+    }
+  }
+
+  if (emitted === 0) {
+    throw new UserFacingError('No frame could be decoded from this video.')
+  }
+}
+
+interface AudioJob {
+  run: () => Promise<void>
+}
+
+/**
+ * Wires the audio track into the output and returns the job that copies it.
+ * Returns null when the file has no audio, or no usable audio, which is not an
+ * error: exporting a silent video beats failing the whole export.
+ */
+async function prepareAudio(input: Input, output: Output): Promise<AudioJob | null> {
+  const track = await input.getPrimaryAudioTrack()
+  if (!track) return null
+
+  const codec = await track.getCodec()
+  const supported = output.format.getSupportedAudioCodecs()
+
+  // Fast path: the container accepts the source codec, so the packets are
+  // copied across without decoding or re-encoding anything.
+  if (codec && supported.includes(codec)) {
+    return copyAudio(track, output, codec)
+  }
+
+  return reencodeAudio(track, output, supported)
+}
+
+function copyAudio(track: InputAudioTrack, output: Output, codec: AudioCodec): AudioJob {
+  const source = new EncodedAudioPacketSource(codec)
+  output.addAudioTrack(source)
+
+  return {
+    run: async () => {
+      const decoderConfig = await track.getDecoderConfig()
+      if (!decoderConfig) {
+        throw new Error(`Audio track is missing the decoder configuration for codec "${codec}".`)
+      }
+      let first = true
+      for await (const packet of new EncodedPacketSink(track).packets()) {
+        // The decoder config only has to travel with the first packet.
+        await source.add(packet, first ? { decoderConfig } : undefined)
+        first = false
+      }
+    },
+  }
+}
+
+async function reencodeAudio(
+  track: InputAudioTrack,
+  output: Output,
+  supported: AudioCodec[],
+): Promise<AudioJob | null> {
+  const numberOfChannels = await track.getNumberOfChannels()
+  const sampleRate = await track.getSampleRate()
+
+  const codec = await getFirstEncodableAudioCodec(supported, { numberOfChannels, sampleRate })
+  if (!codec || !(await track.canDecode())) return null
+
+  const source = new AudioSampleSource({ codec, bitrate: config.output.audioBitrate })
+  output.addAudioTrack(source)
+
+  return {
+    run: async () => {
+      for await (const sample of new AudioSampleSink(track).samples()) {
+        try {
+          await source.add(sample)
+        } finally {
+          sample.close()
+        }
+      }
+    },
   }
 }
