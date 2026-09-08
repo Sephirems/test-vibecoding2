@@ -1,0 +1,278 @@
+:root {
+  --bg: #0d0f14;
+  --surface: #161a22;
+  --surface-hover: #1e232d;
+  --border: #262c38;
+  --text: #e8ecf3;
+  --text-muted: #8b95a7;
+  --accent: #5b8cff;
+  --error: #ff6b6b;
+  --warning: #ffb84d;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.header__title {
+  font-size: 40px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+}
+
+.header__subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 17px;
+}
+
+/* Import ------------------------------------------------------------------ */
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  padding: 64px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: var(--surface);
+}
+
+.dropzone:hover,
+.dropzone--active {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.dropzone__icon {
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
+.dropzone__title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.dropzone__hint {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin: 0 0 24px;
+}
+
+/* Buttons ----------------------------------------------------------------- */
+
+.button {
+  font: inherit;
+  font-weight: 600;
+  padding: 11px 22px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.button:hover:not(:disabled) {
+  filter: brightness(1.25);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.button--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  padding: 14px 32px;
+  font-size: 16px;
+}
+
+.button--ghost {
+  background: none;
+  padding: 7px 14px;
+  font-weight: 500;
+}
+
+/* Workspace --------------------------------------------------------------- */
+
+.workspace__meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-bottom: 24px;
+}
+
+.workspace__meta > span:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.workspace__meta > .button {
+  margin-left: auto;
+}
+
+/* Progress ---------------------------------------------------------------- */
+
+.progress {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+.progress__message {
+  margin: 0 0 14px;
+  font-weight: 500;
+}
+
+.progress__bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress__fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.progress__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 0;
+  font-size: 13px;
+}
+
+.progress__step--todo {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.progress__step--active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.progress__step--done {
+  color: var(--text-muted);
+}
+
+.progress__step--done::before {
+  content: "✓ ";
+}
+
+/* Preview ----------------------------------------------------------------- */
+
+.preview {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.preview__label {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 0 0 10px;
+}
+
+.preview__stage {
+  position: relative;
+  line-height: 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.preview__video {
+  width: 100%;
+  display: block;
+}
+
+/* Sits on top of the video but must not swallow the native controls. */
+.preview__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.preview__result {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+  border-radius: 12px;
+  background: #000;
+}
+
+/* Feedback ---------------------------------------------------------------- */
+
+.actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 32px;
+}
+
+.banner {
+  margin-top: 24px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.banner--error {
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  color: var(--error);
+}
+
+.banner--warning {
+  background: rgba(255, 184, 77, 0.12);
+  border: 1px solid rgba(255, 184, 77, 0.35);
+  color: var(--warning);
+}
+
+@media (max-width: 800px) {
+  .preview {
+    grid-template-columns: 1fr;
+  }
+}
