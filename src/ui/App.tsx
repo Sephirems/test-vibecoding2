@@ -14,6 +14,8 @@ export function App() {
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
   const [progress, setProgress] = useState<Progress>(IDLE)
   const [error, setError] = useState<string | null>(null)
+  /** Informational, not a failure: shown in a neutral banner. */
+  const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -38,6 +40,7 @@ export function App() {
       abortRef.current = controller
 
       setError(null)
+      setNotice(null)
       setAnalysis(null)
       setBusy(true)
 
@@ -51,7 +54,7 @@ export function App() {
         setProgress({ stage: 'done', ratio: 1, message: 'Ready.' })
 
         if (result.noSubjectFound) {
-          setError('No person was detected — the framing stays centered on the video.')
+          setNotice('No person was detected, so the framing stays centered on the video.')
         }
       } catch (cause) {
         if (loaded) URL.revokeObjectURL(loaded.url)
@@ -96,6 +99,7 @@ export function App() {
     setAnalysis(null)
     setProgress(IDLE)
     setError(null)
+    setNotice(null)
   }, [info])
 
   return (
@@ -147,6 +151,7 @@ export function App() {
         </section>
       )}
 
+      {notice && <p className="banner banner--notice">{notice}</p>}
       {error && <p className="banner banner--error">{error}</p>}
     </div>
   )

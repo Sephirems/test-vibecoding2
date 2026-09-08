@@ -62,6 +62,11 @@ export async function exportVideo(
     )
   }
 
+  // Some files (MP4 edit lists, composition offsets) start slightly before
+  // zero. The muxer rejects negative timestamps, so everything we write is
+  // shifted forward by that much.
+  const timeShift = Math.max(0, -(await input.getFirstTimestamp()))
+
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -81,11 +86,11 @@ export async function exportVideo(
   })
   output.addVideoTrack(videoSource)
 
-  const audio = await prepareAudio(input, output)
+  const audio = await prepareAudio(input, output, timeShift)
   await output.start()
 
   try {
-    await renderFrames(videoTrack, analysis, info, ctx, videoSource, onProgress, signal)
+    await renderFrames(videoTrack, analysis, info, ctx, videoSource, timeShift, onProgress, signal)
 
     if (audio) {
       onProgress({ stage: 'encoding', ratio: 1, message: 'Adding the audio track...' })
@@ -111,6 +116,7 @@ async function renderFrames(
   info: VideoInfo,
   ctx: CanvasRenderingContext2D,
   videoSource: CanvasSource,
+  timeShift: number,
   onProgress: (progress: Progress) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -127,11 +133,14 @@ async function renderFrames(
     try {
       if (signal?.aborted) throw new DOMException('Export cancelled', 'AbortError')
 
-      // A tiny epsilon keeps rounding from dropping an otherwise valid frame.
-      if (sample.timestamp + 1e-6 < nextEmitTime) continue
-      nextEmitTime = sample.timestamp + minFrameGap
+      // Shifted onto the same timeline the analysis used, which starts at zero.
+      const time = Math.max(0, sample.timestamp + timeShift)
 
-      const crop = cropRectAt(analysis.keyframes, sample.timestamp, info.width, info.height)
+      // A tiny epsilon keeps rounding from dropping an otherwise valid frame.
+      if (time + 1e-6 < nextEmitTime) continue
+      nextEmitTime = time + minFrameGap
+
+      const crop = cropRectAt(analysis.keyframes, time, info.width, info.height)
       sample.draw(
         ctx,
         crop.x, crop.y, crop.width, crop.height,
@@ -140,7 +149,7 @@ async function renderFrames(
 
       // Duration is left out on purpose: the muxer derives it from the next
       // timestamp, which keeps the timeline correct even when frames are dropped.
-      await videoSource.add(sample.timestamp)
+      await videoSource.add(time)
       emitted++
 
       // Throttled so a long export does not trigger a React render per frame.
@@ -149,8 +158,8 @@ async function renderFrames(
         lastProgressAt = now
         onProgress({
           stage: 'encoding',
-          ratio: Math.min(1, sample.timestamp / info.duration),
-          message: `Generating the vertical video... ${sample.timestamp.toFixed(1)}s of ${info.duration.toFixed(1)}s`,
+          ratio: Math.min(1, time / info.duration),
+          message: `Generating the vertical video... ${time.toFixed(1)}s of ${info.duration.toFixed(1)}s`,
         })
       }
     } finally {
@@ -172,7 +181,11 @@ interface AudioJob {
  * Returns null when the file has no audio, or no usable audio, which is not an
  * error: exporting a silent video beats failing the whole export.
  */
-async function prepareAudio(input: Input, output: Output): Promise<AudioJob | null> {
+async function prepareAudio(
+  input: Input,
+  output: Output,
+  timeShift: number,
+): Promise<AudioJob | null> {
   const track = await input.getPrimaryAudioTrack()
   if (!track) return null
 
@@ -182,13 +195,18 @@ async function prepareAudio(input: Input, output: Output): Promise<AudioJob | nu
   // Fast path: the container accepts the source codec, so the packets are
   // copied across without decoding or re-encoding anything.
   if (codec && supported.includes(codec)) {
-    return copyAudio(track, output, codec)
+    return copyAudio(track, output, codec, timeShift)
   }
 
-  return reencodeAudio(track, output, supported)
+  return reencodeAudio(track, output, supported, timeShift)
 }
 
-function copyAudio(track: InputAudioTrack, output: Output, codec: AudioCodec): AudioJob {
+function copyAudio(
+  track: InputAudioTrack,
+  output: Output,
+  codec: AudioCodec,
+  timeShift: number,
+): AudioJob {
   const source = new EncodedAudioPacketSource(codec)
   output.addAudioTrack(source)
 
@@ -200,8 +218,12 @@ function copyAudio(track: InputAudioTrack, output: Output, codec: AudioCodec): A
       }
       let first = true
       for await (const packet of new EncodedPacketSink(track).packets()) {
+        const time = Math.max(0, packet.timestamp + timeShift)
         // The decoder config only has to travel with the first packet.
-        await source.add(packet, first ? { decoderConfig } : undefined)
+        await source.add(
+          time === packet.timestamp ? packet : packet.clone({ timestamp: time }),
+          first ? { decoderConfig } : undefined,
+        )
         first = false
       }
     },
@@ -212,6 +234,7 @@ async function reencodeAudio(
   track: InputAudioTrack,
   output: Output,
   supported: AudioCodec[],
+  timeShift: number,
 ): Promise<AudioJob | null> {
   const numberOfChannels = await track.getNumberOfChannels()
   const sampleRate = await track.getSampleRate()
@@ -226,6 +249,7 @@ async function reencodeAudio(
     run: async () => {
       for await (const sample of new AudioSampleSink(track).samples()) {
         try {
+          sample.setTimestamp(Math.max(0, sample.timestamp + timeShift))
           await source.add(sample)
         } finally {
           sample.close()
